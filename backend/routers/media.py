@@ -6,7 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, Request, Response, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
 
 from backend.config import (
@@ -75,20 +75,27 @@ async def _save_uploaded_file_chunked(file: UploadFile, save_path: Path, max_byt
 
 
 @router.post("/api/upload-video")
-async def upload_video(file: UploadFile = File(...)):
+async def upload_video(
+    file: UploadFile = File(...),
+    client_duration: Optional[float] = Form(None),
+    client_width: Optional[int] = Form(None),
+    client_height: Optional[int] = Form(None),
+    original_filename: Optional[str] = Form(None),
+):
     """
-    Handles local video file uploads (.mp4, .mov, .mkv, .webm, .avi, etc.).
-    Extracts video metadata (duration, resolution, fps) and saves to uploads folder.
+    Handles local video or browser-extracted audio uploads (.mp4, .mov, .mkv, .webm, .avi, .wav, .mp3, etc.).
+    Extracts metadata and saves to uploads folder.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
     
+    display_filename = original_filename or file.filename
     ext = os.path.splitext(file.filename)[1].lower()
-    allowed = [".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".flv", ".wmv"]
+    allowed = [".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".flv", ".wmv", ".wav", ".mp3", ".m4a", ".ogg", ".aac", ".flac"]
     if ext not in allowed:
-        raise HTTPException(status_code=400, detail=f"Unsupported video format. Allowed: {', '.join(allowed)}")
+        raise HTTPException(status_code=400, detail=f"Unsupported media format. Allowed: {', '.join(allowed)}")
     
-    clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', file.filename)
+    clean_name = re.sub(r'[^a-zA-Z0-9_.-]', '_', display_filename)
     unique_id = f"upload_{uuid.uuid4().hex[:10]}"
     unique_name = f"{unique_id}_{clean_name}"
     save_path = UPLOADS_DIR / unique_name
@@ -96,20 +103,24 @@ async def upload_video(file: UploadFile = File(...)):
     try:
         bytes_written = await _save_uploaded_file_chunked(file, save_path, MAX_VIDEO_UPLOAD_BYTES)
         meta = await asyncio.to_thread(get_video_file_metadata, save_path)
-        logger.info(f"Uploaded video '{file.filename}' -> saved as '{unique_name}' ({meta.get('duration')}s, {meta.get('width')}x{meta.get('height')})")
+        
+        final_duration = meta.get("duration") or (client_duration if client_duration and client_duration > 0 else 0.0)
+        final_width = (client_width if client_width and client_width > 0 else meta.get("width")) or 1920
+        final_height = (client_height if client_height and client_height > 0 else meta.get("height")) or 1080
+        
+        logger.info(f"Uploaded media '{display_filename}' -> saved as '{unique_name}' ({final_duration}s, {final_width}x{final_height}, {bytes_written} bytes)")
         
         return {
             "success": True,
             "video_id": unique_id,
-            "filename": file.filename,
+            "filename": display_filename,
             "saved_name": unique_name,
             "file_path": str(save_path),
             "video_url": f"/api/video/{unique_name}",
-            "duration": meta.get("duration", 0.0),
-            "width": meta.get("width", 1920),
-            "height": meta.get("height", 1080),
-            "fps": meta.get("fps", 30.0),
-            "has_audio": meta.get("has_audio", True),
+            "duration": final_duration,
+            "width": final_width,
+            "height": final_height,
+            "has_audio": True,
             "size_bytes": bytes_written
         }
     except HTTPException:

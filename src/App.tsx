@@ -6,6 +6,7 @@ import { CookiesModal } from './components/CookiesModal';
 import { ClipTrimmerModal } from './components/ClipTrimmerModal';
 import { AppUpdateModal } from './components/AppUpdateModal';
 import { resilientFetch } from './utils/api';
+import { extractAudioFromVideoClient } from './utils/audioExtractor';
 import { useLanguage } from './locales';
 import type { AnalyzeResponse, ViralClip, RenderSettings, BatchRenderProgress } from './types';
 
@@ -1164,30 +1165,46 @@ export default function App() {
       if (!currentVideoInfo && uploadedVideoFile) {
         setIsUploadingVideo(true);
         setLoadingDetails(t.form.uploadingVideo);
-        setAiStage('Uploading Local Video');
-        setAiDetail(`Uploading ${uploadedVideoFile.name} (${(uploadedVideoFile.size / (1024 * 1024)).toFixed(1)} MB)...`);
+        setAiStage('Extracting Audio in Browser');
+        setAiDetail(`Extracting audio stream from ${uploadedVideoFile.name} (${(uploadedVideoFile.size / (1024 * 1024)).toFixed(1)} MB)...`);
 
         try {
+          const { audioFile, metadata } = await extractAudioFromVideoClient(
+            uploadedVideoFile,
+            (stage) => {
+              setAiDetail(stage);
+              setLoadingDetails(stage);
+            }
+          );
+
+          setAiStage('Uploading Speech Audio Track');
+          setAiDetail(`Uploading compressed audio track (${(audioFile.size / (1024 * 1024)).toFixed(1)} MB)...`);
+
           const formData = new FormData();
-          formData.append('file', uploadedVideoFile);
+          formData.append('file', audioFile);
+          formData.append('client_duration', String(metadata.duration || 0));
+          formData.append('client_width', String(metadata.width || 1920));
+          formData.append('client_height', String(metadata.height || 1080));
+          formData.append('original_filename', uploadedVideoFile.name);
+
           const upRes = await fetch('/api/upload-video', {
             method: 'POST',
             body: formData,
           });
           if (!upRes.ok) {
             const errJson = await upRes.json().catch(() => ({}));
-            throw new Error(errJson.detail || 'Failed to upload video file');
+            throw new Error(errJson.detail || 'Failed to upload video audio');
           }
           const upData = await upRes.json();
           currentVideoInfo = {
             videoId: upData.video_id,
             filename: upData.filename,
             savedName: upData.saved_name,
-            duration: upData.duration,
-            videoUrl: upData.video_url,
+            duration: upData.duration || metadata.duration,
+            videoUrl: metadata.objectUrl || upData.video_url,
             filePath: upData.file_path,
-            width: upData.width,
-            height: upData.height,
+            width: upData.width || metadata.width,
+            height: upData.height || metadata.height,
           };
           setUploadedVideoInfo(currentVideoInfo);
           setIsUploadingVideo(false);
