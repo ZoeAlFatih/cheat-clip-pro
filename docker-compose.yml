@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  cheat-clip-pro:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cheat-clip-pro
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - SUPADATA_API_KEYS=${SUPADATA_API_KEYS:-}
+      - WEBSHARE_PROXY=${WEBSHARE_PROXY:-}
+    volumes:
+      - media_temp:/app/temp
+      - media_uploads:/app/uploads
+      - media_exports:/app/exports
+      - custom_fonts:/app/fonts
+    deploy:
+      resources:
+        limits:
+          memory: 3200M
+
+volumes:
+  media_temp:
+  media_uploads:
+  media_exports:
+  custom_fonts:

@@ -93,7 +93,26 @@ app.include_router(cookies_router)
 app.include_router(downloads_router)
 app.include_router(system_router)
 
-logger.info("Cheat Clip PRO backend routers mounted successfully.")
+# Mount built frontend in production container if dist/ exists
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+dist_dir = Path(__file__).resolve().parent.parent / "dist"
+if dist_dir.exists() and (dist_dir / "index.html").exists():
+    if (dist_dir / "assets").exists():
+        app.mount("/assets", StaticFiles(directory=dist_dir / "assets"), name="assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        file_candidate = dist_dir / full_path
+        if full_path and file_candidate.exists() and file_candidate.is_file():
+            return FileResponse(file_candidate)
+        return FileResponse(dist_dir / "index.html")
+    
+    logger.info("Cheat Clip PRO production frontend mounted from dist/.")
+else:
+    logger.info("Cheat Clip PRO backend routers mounted successfully.")
 
 if __name__ == "__main__":
     import uvicorn
