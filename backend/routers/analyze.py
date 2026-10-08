@@ -5,7 +5,7 @@ import os
 import re
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from google import genai
 from google.genai import types
@@ -16,6 +16,7 @@ from backend.config import (
     UPLOADS_DIR,
     compute_audio_energy_heatmap,
     get_video_file_metadata,
+    is_safe_media_path,
     logger,
     transcribe_local_video_file,
 )
@@ -91,7 +92,8 @@ def supadata_usage_endpoint(refresh: bool = False):
 
 
 @router.get("/api/models")
-def list_available_models(api_key: str = ""):
+def list_available_models(api_key: str = Header("", alias="X-Gemini-Api-Key")):
+    # Header, not query string: query strings end up in access logs.
     """Fetches list of available Gemini models using the user's API key, prioritizing Flash models (newest first)."""
     models = list_available_gemini_models(api_key)
     return {"models": models}
@@ -114,6 +116,8 @@ async def analyze_video(request: AnalyzeRequest):
         is_uploaded = False
         is_gdrive = is_google_drive_url(req_clean)
         uploaded_file_path: Optional[Path] = None
+
+        local_direct = bool(req_clean) and is_safe_media_path(req_clean) and os.path.isfile(req_clean)
 
         if is_gdrive:
             yield _sse({
@@ -155,25 +159,25 @@ async def analyze_video(request: AnalyzeRequest):
             except Exception as e:
                 yield _sse({"error": f"Failed to fetch video from Google Drive: {str(e)}", "status": 400})
                 return
-        elif req_clean.startswith("upload_") or req_clean.startswith("/api/video/") or req_clean.startswith("file://") or os.path.exists(req_clean):
+        elif req_clean.startswith("upload_") or req_clean.startswith("/api/video/") or req_clean.startswith("file://") or local_direct:
             is_uploaded = True
-        elif (UPLOADS_DIR / os.path.basename(req_clean.split("?")[0])).exists():
+        elif (UPLOADS_DIR / os.path.basename(req_clean.split("?")[0])).is_file():
             is_uploaded = True
         else:
-            matches = list(UPLOADS_DIR.glob(f"*{req_clean}*"))
+            matches = [f for f in UPLOADS_DIR.iterdir() if req_clean and req_clean in f.name and f.is_file()]
             if matches:
                 is_uploaded = True
 
         if is_uploaded:
             if uploaded_file_path is None:
-                if os.path.exists(req_clean):
+                if local_direct:
                     uploaded_file_path = Path(req_clean)
-                elif (UPLOADS_DIR / os.path.basename(req_clean.split("?")[0])).exists():
+                elif (UPLOADS_DIR / os.path.basename(req_clean.split("?")[0])).is_file():
                     uploaded_file_path = UPLOADS_DIR / os.path.basename(req_clean.split("?")[0])
-                elif (TEMP_DIR / os.path.basename(req_clean.split("?")[0])).exists():
+                elif (TEMP_DIR / os.path.basename(req_clean.split("?")[0])).is_file():
                     uploaded_file_path = TEMP_DIR / os.path.basename(req_clean.split("?")[0])
                 else:
-                    matches = list(UPLOADS_DIR.glob(f"*{req_clean}*"))
+                    matches = [f for f in UPLOADS_DIR.iterdir() if req_clean and req_clean in f.name and f.is_file()]
                     if matches:
                         uploaded_file_path = matches[0]
                     else:
@@ -646,7 +650,9 @@ async def analyze_video(request: AnalyzeRequest):
                 heatmap=mock_heatmap,
                 summary="Mock analysis: this video explains how CHEAT CLIP PRO works. #aitools #videoediting #productivity",
                 clips=mock_clips,
-                model="Mock Gemini"
+                model="Mock Gemini",
+                video_url=video_url,
+                source_type=source_type
             )
             yield _sse({
                 "step": 4,
@@ -879,31 +885,10 @@ async def analyze_video(request: AnalyzeRequest):
                     if not done:
                         elapsed = int(asyncio.get_event_loop().time() - call_start)
                         
-                        if elapsed < 5:
-                            stage = "Neural Context Loading"
-                            detail = f"Transmitting {len(transcript_dump)} timestamped dialogue segments to {model_name}..."
-                            step_prog = min(35, 12 + elapsed * 4)
-                        elif elapsed < 12:
-                            stage = "Retention Spike Cross-Analysis"
-                            detail = f"Correlating viewer retention peaks against speaker dialogue to isolate viral moments..."
-                            step_prog = min(55, 35 + int((elapsed - 5) * 3))
-                        elif elapsed < 20:
-                            stage = "Viral Hook & Curiosity Detection"
-                            detail = f"Scanning transcript dialogue for opening hooks, punchlines, controversial takes & emotional peaks..."
-                            step_prog = min(72, 55 + int((elapsed - 12) * 2.2))
-                        elif elapsed < 30:
-                            stage = "Coherence & Sentence Boundary Snapping"
-                            detail = f"Ensuring clip candidates start and end naturally on sentence boundaries without mid-word cuts..."
-                            step_prog = min(85, 72 + int((elapsed - 20) * 1.3))
-                        elif elapsed < 42:
-                            stage = "Virality Scoring & Selection"
-                            display_clip_count = "all high-value" if is_auto_clip_count else f"the top {clip_range}"
-                            detail = f"Calculating virality coefficients (1-100) and selecting {display_clip_count} highest potential clips..."
-                            step_prog = min(92, 85 + int((elapsed - 30) * 0.7))
-                        else:
-                            stage = "Social Media Metadata Synthesis"
-                            detail = f"Drafting attention-grabbing titles, social captions, and targeted hashtags ({elapsed}s)..."
-                            step_prog = min(95, 92 + min(3, int((elapsed - 42) * 0.3)))
+                        # The Gemini call exposes no intermediate state; report the wait honestly.
+                        stage = "Waiting for Gemini"
+                        detail = f"{model_name} is analyzing {len(transcript_dump)} transcript segments ({elapsed}s elapsed)..."
+                        step_prog = min(95, 12 + elapsed * 2)
 
                         overall_prog = 70 + int(step_prog * 0.28)
                         yield _sse({

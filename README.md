@@ -77,6 +77,9 @@ We recommend setting up a Python virtual environment:
   pip install -r backend/requirements.txt
   ```
 
+> 💡 **No NVIDIA GPU?** Install the CPU build of PyTorch first (about 200 MB instead of several GB of CUDA libraries), then the requirements:
+> `pip install torch --index-url https://download.pytorch.org/whl/cpu`
+
 ---
 
 ### Step 4: Run the App
@@ -90,6 +93,23 @@ npm run dev
 * **Web App:** [`http://localhost:5173`](http://localhost:5173)
 * **Backend API:** [`http://localhost:8000`](http://localhost:8000)
 * **API Documentation:** [`http://localhost:8000/docs`](http://localhost:8000/docs)
+
+#### Network & port settings
+
+The API has no user accounts, so it only listens on `127.0.0.1` and rejects requests from other websites or hostnames.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `BACKEND_PORT` | `8000` | Backend port, e.g. `BACKEND_PORT=8010 npm run dev` when 8000 is taken |
+| `HOST` | `127.0.0.1` | Bind address. Only use `0.0.0.0` behind your own authenticating reverse proxy |
+| `ALLOWED_HOSTS` | `localhost,127.0.0.1` | Hostnames the backend answers to (set it when serving under a domain) |
+| `CHEAT_CLIP_API_KEY` | _(empty: off)_ | Access key for the whole API. The web UI asks for it once; scripts send `X-API-Key`. Set it whenever others can reach the server |
+
+#### Tests
+
+```bash
+venv/bin/python -m unittest backend.tests.test_audit_fixes -v
+```
 
 ---
 

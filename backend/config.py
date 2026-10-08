@@ -78,6 +78,8 @@ try:
         get_video_file_metadata,
         compute_audio_energy_heatmap,
         transcribe_local_video_file,
+        is_safe_media_path,
+        media_ref_basename,
     )
 except ImportError:
     from video_engine import (
@@ -103,6 +105,8 @@ except ImportError:
         get_video_file_metadata,
         compute_audio_energy_heatmap,
         transcribe_local_video_file,
+        is_safe_media_path,
+        media_ref_basename,
     )
 
 UPLOADS_DIR = TEMP_DIR / "uploads"

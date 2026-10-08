@@ -450,3 +450,16 @@ def is_safe_remote_url(url: str, allowed_domains: Optional[set] = None) -> bool:
         return True
     except Exception:
         return False
+
+
+def normalize_source_url(video_url: Optional[str], video_id: Optional[str]) -> str:
+    """URL a download/render job reads from: an http(s) URL or /api/video/<file> as-is,
+    /api/video/<id> for uploads and Drive copies, otherwise a YouTube watch URL."""
+    url = (video_url or "").strip()
+    if url.startswith("http") or url.startswith("/api/video/"):
+        return url
+    if video_id and (video_id.startswith("gdrive_") or video_id.startswith("upload_")):
+        return f"/api/video/{video_id}"
+    if video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return f"https://www.youtube.com/watch?v={url}" if url else ""

@@ -6,7 +6,6 @@ import { CookiesModal } from './components/CookiesModal';
 import { ClipTrimmerModal } from './components/ClipTrimmerModal';
 import { AppUpdateModal } from './components/AppUpdateModal';
 import { resilientFetch } from './utils/api';
-import { extractAudioFromVideoClient } from './utils/audioExtractor';
 import { useLanguage } from './locales';
 import type { AnalyzeResponse, ViralClip, RenderSettings, BatchRenderProgress } from './types';
 
@@ -563,7 +562,8 @@ export default function App() {
       }
       setLoadingModels(true);
       try {
-        const res = await resilientFetch(`/api/models?api_key=${encodeURIComponent(cleanKey)}`, {
+        const res = await resilientFetch('/api/models', {
+          headers: { 'X-Gemini-Api-Key': cleanKey },
           maxRetries: 3,
           retryDelay: 800,
           silent: true
@@ -685,7 +685,7 @@ export default function App() {
           }
 
           const thumb = (isGDrive || isUpload)
-            ? `/api/frame/${encodeURIComponent(video_id)}?t=2`
+            ? `/api/clip-frame?video_id=${encodeURIComponent(video_id)}&timestamp=2`
             : `https://img.youtube.com/vi/${video_id}/mqdefault.jpg`;
 
           entries.push({
@@ -1165,26 +1165,14 @@ export default function App() {
       if (!currentVideoInfo && uploadedVideoFile) {
         setIsUploadingVideo(true);
         setLoadingDetails(t.form.uploadingVideo);
-        setAiStage('Extracting Audio in Browser');
-        setAiDetail(`Extracting audio stream from ${uploadedVideoFile.name} (${(uploadedVideoFile.size / (1024 * 1024)).toFixed(1)} MB)...`);
+        setAiStage('Uploading Video');
+        setAiDetail(`Uploading ${uploadedVideoFile.name} (${(uploadedVideoFile.size / (1024 * 1024)).toFixed(1)} MB)...`);
 
         try {
-          const { audioFile, metadata } = await extractAudioFromVideoClient(
-            uploadedVideoFile,
-            (stage) => {
-              setAiDetail(stage);
-              setLoadingDetails(stage);
-            }
-          );
-
-          setAiStage('Uploading Speech Audio Track');
-          setAiDetail(`Uploading compressed audio track (${(audioFile.size / (1024 * 1024)).toFixed(1)} MB)...`);
-
+          // Upload the full video: the backend renders clips from it. Uploading only the
+          // browser-extracted audio left nothing to render (ffmpeg: "':v' matches no streams").
           const formData = new FormData();
-          formData.append('file', audioFile);
-          formData.append('client_duration', String(metadata.duration || 0));
-          formData.append('client_width', String(metadata.width || 1920));
-          formData.append('client_height', String(metadata.height || 1080));
+          formData.append('file', uploadedVideoFile);
           formData.append('original_filename', uploadedVideoFile.name);
 
           const upRes = await fetch('/api/upload-video', {
@@ -1193,18 +1181,18 @@ export default function App() {
           });
           if (!upRes.ok) {
             const errJson = await upRes.json().catch(() => ({}));
-            throw new Error(errJson.detail || 'Failed to upload video audio');
+            throw new Error(errJson.detail || 'Failed to upload video');
           }
           const upData = await upRes.json();
           currentVideoInfo = {
             videoId: upData.video_id,
             filename: upData.filename,
             savedName: upData.saved_name,
-            duration: upData.duration || metadata.duration,
-            videoUrl: metadata.objectUrl || upData.video_url,
+            duration: upData.duration,
+            videoUrl: upData.video_url,
             filePath: upData.file_path,
-            width: upData.width || metadata.width,
-            height: upData.height || metadata.height,
+            width: upData.width,
+            height: upData.height,
           };
           setUploadedVideoInfo(currentVideoInfo);
           setIsUploadingVideo(false);
@@ -1450,7 +1438,7 @@ export default function App() {
         setError(
           '🔌 Backend API Server is unreachable (Port 8000).\n' +
           'Please ensure the full app is running in your terminal (`npm run dev`).\n' +
-          'If Python dependencies were not installed yet, run: `pip install -r requirements.txt`'
+          'If Python dependencies were not installed yet, run: `pip install -r backend/requirements.txt`'
         );
       } else {
         setError(msg || 'An unexpected error occurred during analysis.');

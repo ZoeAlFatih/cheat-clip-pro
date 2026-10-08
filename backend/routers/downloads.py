@@ -8,6 +8,8 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from backend.config import EXPORTS_DIR, logger
+from backend.utils.jobs import prune_finished_jobs
+from backend.utils.text import normalize_source_url
 from backend.schemas.downloads import RawClipDownloadRequest, RawVideoDownloadRequest
 from backend.services.download_service import (
     raw_clip_download_jobs,
@@ -21,19 +23,7 @@ router = APIRouter(tags=["Downloads"])
 
 @router.post("/api/download-raw-video")
 async def handle_download_raw_video(req: RawVideoDownloadRequest, background_tasks: BackgroundTasks):
-    v_url = req.video_url.strip() if req.video_url else ""
-    if not v_url:
-        if req.video_id and (req.video_id.startswith("gdrive_") or req.video_id.startswith("upload_")):
-            v_url = f"/api/video/{req.video_id}"
-        elif req.video_id:
-            v_url = f"https://www.youtube.com/watch?v={req.video_id}"
-    elif not v_url.startswith("http") and not v_url.startswith("/api/video/"):
-        if req.video_id and (req.video_id.startswith("gdrive_") or req.video_id.startswith("upload_")):
-            v_url = f"/api/video/{req.video_id}"
-        elif req.video_id:
-            v_url = f"https://www.youtube.com/watch?v={req.video_id}"
-        else:
-            v_url = f"https://www.youtube.com/watch?v={v_url}"
+    v_url = normalize_source_url(req.video_url, req.video_id)
 
     job_id = str(uuid.uuid4())[:8]
     safe_id = re.sub(r'[^a-zA-Z0-9_-]', '_', req.video_id or "youtube_video")
@@ -43,6 +33,7 @@ async def handle_download_raw_video(req: RawVideoDownloadRequest, background_tas
     clean_title = re.sub(r'[\\/*?:"<>|]', "", (req.title or "").strip())
     download_title = f"{clean_title} (Full Video)" if clean_title else f"{safe_id} (Full Video)"
 
+    prune_finished_jobs(raw_download_jobs, lambda j: j.get("status") in ("ready", "failed"))
     raw_download_jobs[job_id] = {
         "job_id": job_id,
         "status": "starting",
@@ -70,24 +61,13 @@ async def get_raw_download_status(job_id: str):
 
 @router.post("/api/download-raw-clip")
 async def handle_download_raw_clip(req: RawClipDownloadRequest, background_tasks: BackgroundTasks):
-    v_url = req.video_url.strip() if req.video_url else ""
-    if not v_url:
-        if req.video_id and (req.video_id.startswith("gdrive_") or req.video_id.startswith("upload_")):
-            v_url = f"/api/video/{req.video_id}"
-        elif req.video_id:
-            v_url = f"https://www.youtube.com/watch?v={req.video_id}"
-    elif not v_url.startswith("http") and not v_url.startswith("/api/video/"):
-        if req.video_id and (req.video_id.startswith("gdrive_") or req.video_id.startswith("upload_")):
-            v_url = f"/api/video/{req.video_id}"
-        elif req.video_id:
-            v_url = f"https://www.youtube.com/watch?v={req.video_id}"
-        else:
-            v_url = f"https://www.youtube.com/watch?v={v_url}"
+    v_url = normalize_source_url(req.video_url, req.video_id)
 
     job_id = str(uuid.uuid4())[:8]
     clean_title = re.sub(r'[\\/*?:"<>|]', "", (req.title or "clip").strip()) or "clip"
     download_title = f"{clean_title} (raw)"
 
+    prune_finished_jobs(raw_clip_download_jobs, lambda j: j.get("status") in ("ready", "failed"))
     raw_clip_download_jobs[job_id] = {
         "job_id": job_id,
         "status": "starting",

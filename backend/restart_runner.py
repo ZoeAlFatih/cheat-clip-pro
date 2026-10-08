@@ -1,7 +1,7 @@
 """
 Detached background restart runner for Cheat Clip PRO.
 Spawns as an independent detached process, waits for HTTP response delivery,
-frees ports 8000 and 5173, and relaunches `npm run dev` in a fresh console.
+frees the backend port (BACKEND_PORT, default 8000) and 5173, and relaunches `npm run dev` in a fresh console.
 """
 
 import os
@@ -28,7 +28,8 @@ def free_ports_windows(ports=(8000, 5173)):
         f"    $conns = Get-NetTCPConnection -LocalPort $p -ErrorAction Stop; "
         f"    $pids = $conns | Select-Object -ExpandProperty OwningProcess -Unique; "
         f"    foreach ($procId in $pids) {{ "
-        f"      if ($procId -ne {current_pid} -and $procId -gt 4) {{ "
+        f"      $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue; "
+        f"      if ($procId -ne {current_pid} -and $procId -gt 4 -and $proc -and @('node','python','pythonw') -contains $proc.ProcessName) {{ "
         f"        Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue "
         f"      }} "
         f"    }} "
@@ -41,6 +42,8 @@ def free_ports_windows(ports=(8000, 5173)):
         logger.warning(f"PowerShell port freeing encountered error: {e}")
 
     # Method 2: Fallback netstat check
+    # ponytail: Windows only filters by image name (node/python), not by app directory;
+    # tighten with the process command line if other node/python servers share these ports.
     try:
         out = subprocess.check_output(["netstat", "-ano", "-p", "tcp"], text=True, timeout=5)
         for line in out.splitlines():
@@ -51,7 +54,7 @@ def free_ports_windows(ports=(8000, 5173)):
                 if pid_str.isdigit():
                     pid = int(pid_str)
                     for p in ports:
-                        if local_addr.endswith(f":{p}") and pid != current_pid and pid > 4:
+                        if local_addr.endswith(f":{p}") and pid != current_pid and pid > 4 and _windows_image_name(pid) in WINDOWS_APP_IMAGES:
                             try:
                                 subprocess.run(
                                     ["taskkill", "/F", "/PID", str(pid)],
@@ -64,15 +67,39 @@ def free_ports_windows(ports=(8000, 5173)):
     except Exception:
         pass
 
-def free_ports_unix(ports=(8000, 5173)):
-    """Frees specified ports on Unix/macOS."""
+WINDOWS_APP_IMAGES = {"node.exe", "python.exe", "pythonw.exe"}
+
+
+def _windows_image_name(pid: int) -> str:
+    try:
+        out = subprocess.check_output(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], text=True, timeout=5)
+        return out.strip().split(",")[0].strip('"').lower()
+    except Exception:
+        return ""
+
+
+def _process_cwd(pid: str) -> str:
+    """Working directory of a process (Linux and macOS, via lsof)."""
+    try:
+        out = subprocess.check_output(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"], text=True, timeout=5, stderr=subprocess.DEVNULL)
+    except Exception:
+        return ""
+    for line in out.splitlines():
+        if line.startswith("n"):
+            return line[1:]
+    return ""
+
+
+def free_ports_unix(ports=(8000, 5173), root_dir: Path = None):
+    """Frees specified ports on Unix/macOS, killing only this app's own servers
+    (processes whose working directory is the app root)."""
     for p in ports:
         try:
             p_int = int(p)
             out = subprocess.check_output(["lsof", "-ti", f":{p_int}"], text=True, timeout=5)
             for pid_str in out.splitlines():
                 pid_str = pid_str.strip()
-                if pid_str.isdigit() and int(pid_str) > 1:
+                if pid_str.isdigit() and int(pid_str) > 1 and root_dir and _process_cwd(pid_str) == str(root_dir):
                     subprocess.run(
                         ["kill", "-9", pid_str],
                         shell=False,
@@ -93,11 +120,12 @@ def main():
     logger.info(f"Waiting {args.delay}s to allow client response to complete...")
     time.sleep(args.delay)
 
-    logger.info("Freeing ports 8000 and 5173...")
+    ports = (int(os.environ.get("BACKEND_PORT", "8000")), 5173)
+    logger.info(f"Freeing ports {ports}...")
     if os.name == "nt":
-        free_ports_windows((8000, 5173))
+        free_ports_windows(ports)
     else:
-        free_ports_unix((8000, 5173))
+        free_ports_unix(ports, root_dir)
 
     time.sleep(1.0)
 

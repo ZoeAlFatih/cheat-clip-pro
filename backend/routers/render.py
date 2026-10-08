@@ -22,6 +22,7 @@ from backend.schemas.render import (
     RenderSettingsModel,
     RetryBatchRequest,
 )
+from backend.utils.jobs import prune_finished_jobs
 from backend.services.render_service import (
     BATCH_REQUESTS,
     RENDER_BATCHES,
@@ -37,6 +38,7 @@ async def start_batch_render(request: RenderBatchRequest, background_tasks: Back
     if not request.clips:
         raise HTTPException(status_code=400, detail="No clips provided for rendering")
 
+    prune_finished_jobs(RENDER_BATCHES, lambda b: b.get("overall_status") in ("completed", "error"), BATCH_REQUESTS)
     batch_id = f"batch_{int(time.time())}_{uuid.uuid4().hex[:6]}"
 
     is_merged = bool(request.settings and getattr(request.settings, "render_mode", "separate") == "merged")

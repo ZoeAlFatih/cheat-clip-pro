@@ -682,6 +682,15 @@ export const en = {
     updateSuccessNotice: "Successfully updated! Relaunching servers...",
     errorTitle: "Update Error",
     closeBtn: "Close",
+  },
+  auth: {
+    title: "Access key required",
+    desc: "This Cheat Clip PRO server is protected. Enter the access key configured as CHEAT_CLIP_API_KEY on the server.",
+    placeholder: "Access key",
+    submit: "Unlock",
+    checking: "Checking...",
+    invalid: "Invalid access key.",
+    unreachable: "Cannot reach the server. Is it running?",
   }
 };
 

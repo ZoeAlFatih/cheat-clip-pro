@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -123,16 +124,14 @@ async def save_youtube_cookies(request: Request):
         )
 
     try:
+        # Session cookies grant access to the Google account: keep a single copy, owner-readable only.
         COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(COOKIES_PATH, "w", encoding="utf-8") as f:
+        fd = os.open(COOKIES_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(normalized)
-
-        try:
-            ROOT_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with open(ROOT_COOKIES_PATH, "w", encoding="utf-8") as f:
-                f.write(normalized)
-        except Exception:
-            pass
+        os.chmod(COOKIES_PATH, 0o600)  # also tighten a file created by an older version
+        if ROOT_COOKIES_PATH.exists():
+            ROOT_COOKIES_PATH.unlink()  # legacy duplicate written by older versions
 
         return {
             "success": True,

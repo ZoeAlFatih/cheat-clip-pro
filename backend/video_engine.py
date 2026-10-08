@@ -8,6 +8,7 @@ import logging
 import subprocess
 import unicodedata
 import math
+import functools
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -31,7 +32,6 @@ def get_effective_cookies_path() -> Optional[Path]:
         return ROOT_COOKIES_PATH
     return None
 
-CASCADE_PATH = BASE_DIR / "haarcascade_frontalface_default.xml"
 CASCADES_DIR = BASE_DIR / "cascades"
 YUNET_MODEL_PATH = CASCADES_DIR / "face_detection_yunet.onnx"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -40,6 +40,22 @@ FONTS_DIR.mkdir(parents=True, exist_ok=True)
 CASCADES_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR = TEMP_DIR / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def is_safe_media_path(path: Union[str, Path]) -> bool:
+    """True only when the path resolves inside one of the app's media directories."""
+    try:
+        resolved = Path(path).resolve()
+    except (OSError, ValueError):
+        return False
+    return any(resolved.is_relative_to(root.resolve()) for root in (UPLOADS_DIR, TEMP_DIR, EXPORTS_DIR, FONTS_DIR))
+
+
+def media_ref_basename(ref: str) -> str:
+    """File name of a media reference (/api/video/<name>, URL or bare name).
+    Decodes before taking the basename so percent-encoded separators cannot survive."""
+    decoded = urllib.parse.unquote((ref or "").split("?")[0]).replace("\\", "/")
+    return os.path.basename(decoded).strip()
 
 def _ffmpeg_has_filter(executable: str, filter_name: str) -> bool:
     """Returns whether an FFmpeg binary exposes the requested filter."""
@@ -565,13 +581,11 @@ def download_clip_segment(
 
     # Check if video_url points to a local file (e.g. uploaded or Google Drive cached video)
     clean_raw = urllib.parse.unquote(video_url.strip())
-    clean_base = os.path.basename(clean_raw.split("?")[0])
+    clean_base = media_ref_basename(video_url)
     local_source = None
 
-    if os.path.exists(clean_raw):
+    if is_safe_media_path(clean_raw) and os.path.isfile(clean_raw):
         local_source = Path(clean_raw)
-    elif os.path.exists(video_url):
-        local_source = Path(video_url)
     elif clean_raw.startswith("/api/video/"):
         candidate = UPLOADS_DIR / clean_base
         if candidate.exists():
@@ -675,7 +689,7 @@ def download_clip_segment(
             "-o", str(output_path),
             "--merge-output-format", "mp4",
             "--no-warnings",
-            clean_url
+            "--", clean_url
         ]
         try:
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_sec)
@@ -719,7 +733,7 @@ def download_clip_segment(
                 "--socket-timeout", "20",
                 "-g",
                 "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/bestvideo+bestaudio/best",
-                clean_url
+                "--", clean_url
             ]
             url_res = subprocess.run(url_cmd, capture_output=True, text=True, timeout=30)
             if url_res.returncode == 0 and url_res.stdout.strip():
@@ -787,7 +801,7 @@ def download_clip_segment(
                 "-o", str(output_path),
                 "--merge-output-format", "mp4",
                 "--no-warnings",
-                clean_url
+                "--", clean_url
             ]
             timeout_720p = max(200, min(600, int(clip_duration * 4) + 60))
             res_720p = subprocess.run(cmd_720p, capture_output=True, text=True, timeout=timeout_720p)
@@ -830,7 +844,7 @@ def download_clip_segment(
                 "-o", str(output_path),
                 "--merge-output-format", "mp4",
                 "--no-warnings",
-                clean_url
+                "--", clean_url
             ]
             timeout_480p = max(150, min(450, int(clip_duration * 3) + 45))
             res_480p = subprocess.run(cmd_480p, capture_output=True, text=True, timeout=timeout_480p)
@@ -914,7 +928,7 @@ def download_full_raw_video(video_url: str, output_path: str, progress_callback=
             "--merge-output-format", "mp4",
             "--newline",
             "--progress-template", "download:%(progress._percent_str)s|%(progress._downloaded_bytes_str)s|%(progress._total_bytes_str)s|%(progress._speed_str)s|%(progress._eta_str)s",
-            clean_url
+            "--", clean_url
         ]
         logger.info(f"Downloading full raw video ({mode_label}) from {clean_url} to {output_path}...")
 
@@ -1232,26 +1246,65 @@ def get_font(font_name: str, size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
-def get_emoji_font(size: int) -> Optional[ImageFont.FreeTypeFont]:
-    """Finds and loads a color emoji font (seguiemj.ttf, NotoColorEmoji.ttf, etc.)."""
-    env_emoji = os.environ.get("EMOJI_FONT_PATH", "").strip()
+# Strike sizes of bitmap color-emoji fonts: Noto Color Emoji (CBDT) only loads at 109px,
+# Apple Color Emoji (sbix) ships several. Scalable fonts (e.g. Segoe UI Emoji) load at any size.
+_BITMAP_EMOJI_STRIKES = (109, 160, 96, 64, 48)
+
+
+@functools.lru_cache(maxsize=32)
+def _load_font(path: str, size: int) -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(path, size)
+
+
+def _draw_emoji(font: ImageFont.FreeTypeFont, chunk: str) -> Optional[Image.Image]:
+    """Renders a color emoji chunk tightly cropped; None when the font draws nothing
+    (Pillow cannot paint COLRv1 fonts such as Fedora's Noto-COLRv1.ttf)."""
+    bbox = font.getbbox(chunk)
+    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    if w <= 0 or h <= 0:
+        return None
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ImageDraw.Draw(im).text((-bbox[0], -bbox[1]), chunk, font=font, embedded_color=True)
+    return im if im.getbbox() else None
+
+
+@functools.lru_cache(maxsize=1)
+def _pick_emoji_font() -> Optional[Tuple[str, Optional[int]]]:
+    """(path, bitmap strike size or None if scalable) of the first color emoji font Pillow can draw."""
     candidates = [
-        env_emoji if env_emoji else None,
-        str(FONTS_DIR / "seguiemj.ttf"),
+        os.environ.get("EMOJI_FONT_PATH", "").strip(),
         str(FONTS_DIR / "NotoColorEmoji.ttf"),
         "C:/Windows/Fonts/seguiemj.ttf",
+        "/System/Library/Fonts/Apple Color Emoji.ttc",
         "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
-        "/usr/share/fonts/google-noto-color-emoji/NotoColorEmoji.ttf",
         "/usr/share/fonts/opentype/noto/NotoColorEmoji.otf",
-        "/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf",
     ]
-    for c in candidates:
-        if c and os.path.exists(c):
+    for path in candidates:
+        if not path or not os.path.exists(path):
+            continue
+        for strike in (None,) + _BITMAP_EMOJI_STRIKES:
             try:
-                return ImageFont.truetype(c, size)
-            except Exception as e:
-                logger.debug(f"Could not load emoji font {c}: {e}")
+                font = _load_font(path, strike or 64)
+            except OSError:
+                continue  # bitmap font: try its strike sizes
+            if _draw_emoji(font, "\U0001F600") is not None:
+                return path, strike
+            break  # loads but paints nothing: next file
+        logger.debug(f"Emoji font not usable by Pillow: {path}")
     return None
+
+
+def render_emoji_image(chunk: str, size: int) -> Optional[Image.Image]:
+    """Color emoji chunk as an RGBA image scaled to `size`, or None if no usable emoji font."""
+    picked = _pick_emoji_font()
+    if not picked:
+        return None
+    path, strike = picked
+    im = _draw_emoji(_load_font(path, strike or size), chunk)
+    if im is not None and strike and strike != size:
+        scale = size / strike
+        im = im.resize((max(1, round(im.width * scale)), max(1, round(im.height * scale))), Image.LANCZOS)
+    return im
 
 
 def render_title_overlay_png(
@@ -1311,7 +1364,7 @@ def render_title_overlay_png(
     # Create dummy draw to measure line widths and prevent edge overflow
     temp_draw = ImageDraw.Draw(Image.new("RGBA", (canvas_w, canvas_h)))
     text_font = get_font(effective_title_font, title_font_size)
-    emoji_font = get_emoji_font(int(title_font_size * 0.90))
+    emoji_size = int(title_font_size * 0.90)
 
     lines = [l.strip() for l in formatted_title.split("\\N") if l.strip()]
     if not lines:
@@ -1322,9 +1375,12 @@ def render_title_overlay_png(
     for line in lines:
         seg_w = 0
         for kind, chunk in split_text_and_emojis(line):
-            f = emoji_font if (kind == 'emoji' and emoji_font) else text_font
-            bbox = temp_draw.textbbox((0, 0), chunk, font=f)
-            seg_w += (bbox[2] - bbox[0])
+            e_img = render_emoji_image(chunk, emoji_size) if kind == 'emoji' else None
+            if e_img is not None:
+                seg_w += e_img.width
+            else:
+                bbox = temp_draw.textbbox((0, 0), chunk, font=text_font)
+                seg_w += (bbox[2] - bbox[0])
         max_line_w = max(max_line_w, seg_w)
 
     max_allowed_w = canvas_w - 70  # 1010px safe width
@@ -1332,7 +1388,7 @@ def render_title_overlay_png(
         scale_factor = max_allowed_w / max_line_w
         title_font_size = max(40, int(title_font_size * scale_factor))
         text_font = get_font(font_name, title_font_size)
-        emoji_font = get_emoji_font(int(title_font_size * 0.90))
+        emoji_size = int(title_font_size * 0.90)
 
     # Content boundaries for aspect ratios
     if target_aspect_ratio == "16:9_landscape":
@@ -1402,11 +1458,15 @@ def render_title_overlay_png(
 
         # 1. Measure total width
         segment_widths = []
+        emoji_images = []
         for kind, chunk in segments:
-            f = emoji_font if (kind == 'emoji' and emoji_font) else text_font
-            bbox = draw.textbbox((0, 0), chunk, font=f)
-            w = bbox[2] - bbox[0]
-            segment_widths.append(w)
+            e_img = render_emoji_image(chunk, emoji_size) if kind == 'emoji' else None
+            emoji_images.append(e_img)
+            if e_img is not None:
+                segment_widths.append(e_img.width)
+            else:
+                bbox = draw.textbbox((0, 0), chunk, font=text_font)
+                segment_widths.append(bbox[2] - bbox[0])
 
         total_line_w = sum(segment_widths)
         start_x = (canvas_w - total_line_w) / 2.0
@@ -1427,18 +1487,11 @@ def render_title_overlay_png(
 
         # 3. Draw outline / stroke and color emojis
         cur_x = start_x
-        for (kind, chunk), w in zip(segments, segment_widths):
-            if kind == 'emoji' and emoji_font:
-                e_bbox = draw.textbbox((0, 0), chunk, font=emoji_font)
-                e_mid = (e_bbox[1] + e_bbox[3]) / 2.0
-                offset_y = t_ref_mid - e_mid
-
-                draw.text(
-                    (cur_x, line_top + offset_y),
-                    chunk,
-                    font=emoji_font,
-                    embedded_color=True
-                )
+        for (kind, chunk), w, e_img in zip(segments, segment_widths, emoji_images):
+            if e_img is not None:
+                # Center the emoji on the text's vertical midline
+                e_top = int(round(line_top + t_ref_mid - e_img.height / 2.0))
+                img.alpha_composite(e_img, (max(0, int(round(cur_x))), max(0, e_top)))
             else:
                 draw.text(
                     (cur_x, line_top),
@@ -2950,12 +3003,10 @@ def extract_clip_frame(video_url: str, video_id: str, timestamp: float = 0.0) ->
     # 0. Check if this is an uploaded or gdrive local video in UPLOADS_DIR or specified by video_url
     local_source = None
     clean_vurl = urllib.parse.unquote(video_url.strip()) if video_url else ""
-    clean_vbase = os.path.basename(clean_vurl.split("?")[0]) if clean_vurl else ""
+    clean_vbase = media_ref_basename(video_url) if clean_vurl else ""
 
-    if clean_vurl and os.path.exists(clean_vurl):
+    if clean_vurl and is_safe_media_path(clean_vurl) and os.path.isfile(clean_vurl):
         local_source = Path(clean_vurl)
-    elif video_url and os.path.exists(video_url):
-        local_source = Path(video_url)
     elif clean_vurl and clean_vurl.startswith("/api/video/") and (UPLOADS_DIR / clean_vbase).exists():
         local_source = UPLOADS_DIR / clean_vbase
     elif clean_vbase and (UPLOADS_DIR / clean_vbase).exists():
@@ -2966,8 +3017,8 @@ def extract_clip_frame(video_url: str, video_id: str, timestamp: float = 0.0) ->
         for q in [clean_vbase, safe_id, video_id, video_id.replace("gdrive_", "").replace("upload_", "")]:
             if not q or len(q) < 3:
                 continue
-            for candidate in UPLOADS_DIR.glob(f"*{q}*"):
-                if candidate.is_file() and is_valid_mp4(candidate) and "_clip_" not in candidate.name:
+            for candidate in UPLOADS_DIR.iterdir():
+                if q in candidate.name and candidate.is_file() and is_valid_mp4(candidate) and "_clip_" not in candidate.name:
                     local_source = candidate
                     break
             if local_source:
@@ -3005,7 +3056,9 @@ def extract_clip_frame(video_url: str, video_id: str, timestamp: float = 0.0) ->
 
     # 2. Extract a tiny 1-second slice of format 18 (fast 360p mp4) using yt-dlp + ffmpeg
     try:
-        clean_url = video_url.strip() if video_url else f"https://www.youtube.com/watch?v={video_id}"
+        clean_url = (video_url or "").strip()
+        if not clean_url.startswith(("http://", "https://")):
+            clean_url = f"https://www.youtube.com/watch?v={video_id}"
         base_cmd = get_yt_dlp_base_cmd()
         temp_slice = frames_dir / f"slice_{safe_id}_{sec}.mp4"
 
@@ -3020,7 +3073,7 @@ def extract_clip_frame(video_url: str, video_id: str, timestamp: float = 0.0) ->
             "--download-sections", f"*{t_start_fmt}-{t_end_fmt}",
             "-o", str(temp_slice),
             "--no-warnings",
-            clean_url
+            "--", clean_url
         ]
         subprocess.run(slice_cmd, capture_output=True, text=True, timeout=20)
         if temp_slice.exists() and temp_slice.stat().st_size > 1000:

@@ -684,5 +684,14 @@ export const id: Translations = {
     updateSuccessNotice: "Berhasil diperbarui! Menjalankan ulang server...",
     errorTitle: "Gagal Memperbarui",
     closeBtn: "Tutup",
+  },
+  auth: {
+    title: "Butuh access key",
+    desc: "Server Cheat Clip PRO ini dilindungi. Masukkan access key yang diatur sebagai CHEAT_CLIP_API_KEY di server.",
+    placeholder: "Access key",
+    submit: "Buka",
+    checking: "Memeriksa...",
+    invalid: "Access key salah.",
+    unreachable: "Server tidak bisa dihubungi. Apakah sudah dijalankan?",
   }
 };

@@ -241,21 +241,25 @@ async function start() {
   const baseArgs = selectedCandidate.args;
   const backendEnv = getSanitizedEnv(pythonExe);
 
+  // Loopback by default: the API has no user authentication, so it must not be reachable
+  // from the LAN. Set HOST=0.0.0.0 (and ALLOWED_HOSTS) only behind your own auth proxy.
+  const host = process.env.HOST || '127.0.0.1';
+  const port = process.env.BACKEND_PORT || '8000';
   const uvicornArgs = [
     ...baseArgs,
     '-m',
     'uvicorn',
     'backend.main:app',
     '--host',
-    '0.0.0.0',
+    host,
     '--port',
-    '8000',
+    port,
     '--reload',
     '--reload-dir',
     path.join(rootDir, 'backend')
   ];
 
-  console.log('\x1b[34m%s\x1b[0m', `🚀 Launching FastAPI server on http://127.0.0.1:8000 ...`);
+  console.log('\x1b[34m%s\x1b[0m', `🚀 Launching FastAPI server on http://${host}:${port} ...`);
 
   const backendProc = spawn(pythonExe, uvicornArgs, {
     cwd: rootDir,
@@ -273,7 +277,7 @@ async function start() {
     if (code !== 0 && code !== null) {
       console.error('\x1b[31m%s\x1b[0m', `⚠️ Backend server process exited with code ${code}.`);
       console.error('\x1b[33m%s\x1b[0m', `💡 Common reasons:`);
-      console.error('\x1b[33m%s\x1b[0m', `   1. Port 8000 is already in use by another app or zombie process.`);
+      console.error('\x1b[33m%s\x1b[0m', `   1. Port ${process.env.BACKEND_PORT || '8000'} is already in use by another app or zombie process.`);
       console.error('\x1b[33m%s\x1b[0m', `   2. Missing dependencies. Run: pip install -r backend/requirements.txt`);
       console.error('\x1b[33m%s\x1b[0m', `   3. If space in username path on Windows, ensure venv was created properly.`);
     }

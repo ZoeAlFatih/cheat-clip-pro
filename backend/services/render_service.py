@@ -19,6 +19,7 @@ from backend.config import (
     transcribe_clip_words,
 )
 from backend.schemas.render import RenderBatchRequest, RenderSettingsModel
+from backend.utils.text import normalize_source_url
 
 RENDER_BATCHES: Dict[str, Dict[str, Any]] = {}
 BATCH_REQUESTS: Dict[str, RenderBatchRequest] = {}
@@ -218,12 +219,13 @@ async def render_single_batch_clip(
 
     except Exception as e:
         logger.error(f"Error rendering clip {idx} in batch {batch_id}: {e}")
+        failed_phase = clip_status.get("status")
         clip_status["status"] = "error"
         err_msg = str(e)
         if "moov atom not found" in err_msg.lower():
             err_msg = "Download interrupted by internet lag ('moov atom not found'). Click Retry to re-download."
         elif "timed out" in err_msg.lower() or "timeout" in err_msg.lower():
-            if clip_status.get("status") == "rendering":
+            if failed_phase == "rendering":
                 err_msg = "Video rendering timed out. Try switching to 'Universal CPU (libx264)' in Studio Settings or retry."
             else:
                 err_msg = "Video download timed out due to slow/laggy internet connection. Click Retry to try again."
@@ -535,19 +537,7 @@ async def process_batch_rendering(batch_id: str, request: RenderBatchRequest):
     settings = request.settings
 
     # Normalize video URL for history or direct URL
-    target_url = (request.video_url or "").strip()
-    if not target_url:
-        if request.video_id and (request.video_id.startswith("gdrive_") or request.video_id.startswith("upload_")):
-            target_url = f"/api/video/{request.video_id}"
-        elif request.video_id:
-            target_url = f"https://www.youtube.com/watch?v={request.video_id}"
-    elif not target_url.startswith("http") and not target_url.startswith("/api/video/"):
-        if request.video_id and (request.video_id.startswith("gdrive_") or request.video_id.startswith("upload_")):
-            target_url = f"/api/video/{request.video_id}"
-        elif request.video_id:
-            target_url = f"https://www.youtube.com/watch?v={request.video_id}"
-        else:
-            target_url = f"https://www.youtube.com/watch?v={target_url}"
+    target_url = normalize_source_url(request.video_url, request.video_id)
 
     is_merged = bool(settings and getattr(settings, "render_mode", "separate") == "merged")
     if is_merged:
@@ -587,19 +577,7 @@ async def process_batch_retry(batch_id: str, clip_indices: List[int]):
     batch["overall_status"] = "running"
     clips = request.clips
     settings = request.settings
-    target_url = (request.video_url or "").strip()
-    if not target_url:
-        if request.video_id and (request.video_id.startswith("gdrive_") or request.video_id.startswith("upload_")):
-            target_url = f"/api/video/{request.video_id}"
-        elif request.video_id:
-            target_url = f"https://www.youtube.com/watch?v={request.video_id}"
-    elif not target_url.startswith("http") and not target_url.startswith("/api/video/"):
-        if request.video_id and (request.video_id.startswith("gdrive_") or request.video_id.startswith("upload_")):
-            target_url = f"/api/video/{request.video_id}"
-        elif request.video_id:
-            target_url = f"https://www.youtube.com/watch?v={request.video_id}"
-        else:
-            target_url = f"https://www.youtube.com/watch?v={target_url}"
+    target_url = normalize_source_url(request.video_url, request.video_id)
 
     is_merged = bool(batch.get("is_merged")) or bool(settings and getattr(settings, "render_mode", "separate") == "merged")
     if is_merged:

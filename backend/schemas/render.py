@@ -1,5 +1,8 @@
+from pathlib import Path
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from backend.config import UPLOADS_DIR
 
 class RenderSettingsModel(BaseModel):
     aspect_ratio: str = "9:16"
@@ -52,6 +55,19 @@ class RenderSettingsModel(BaseModel):
     # Multi-Segment Merged Highlight Video
     render_mode: Optional[str] = "separate"  # "separate" | "merged"
     compilation_title: Optional[str] = None
+
+    @field_validator("bgm_file_path", "hook_sfx_file_path", "watermark_file_path")
+    @classmethod
+    def _only_uploaded_files(cls, v: Optional[str]) -> Optional[str]:
+        # These paths come from the client; only files saved by the upload endpoints may reach ffmpeg.
+        if not v:
+            return None
+        try:
+            if Path(v).resolve().is_relative_to(UPLOADS_DIR.resolve()):
+                return v
+        except (OSError, ValueError):
+            pass
+        return None
 
 class RenderBatchRequest(BaseModel):
     video_url: str

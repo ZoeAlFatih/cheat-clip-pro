@@ -3,11 +3,14 @@ import { createRoot } from 'react-dom/client'
 import { LanguageProvider } from './locales'
 import './index.css'
 import App from './App.tsx'
+import AccessKeyGate from './components/AccessKeyGate.tsx'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <LanguageProvider>
-      <App />
+      <AccessKeyGate>
+        <App />
+      </AccessKeyGate>
     </LanguageProvider>
   </StrictMode>,
 )

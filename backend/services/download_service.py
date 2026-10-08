@@ -5,7 +5,6 @@ import re
 import shutil
 import subprocess
 import time
-import urllib.parse
 from typing import Dict, Optional
 from urllib.parse import quote
 
@@ -17,8 +16,10 @@ from backend.config import (
     UPLOADS_DIR,
     download_clip_segment,
     download_full_raw_video,
+    is_safe_media_path,
     is_valid_mp4,
     logger,
+    media_ref_basename,
 )
 
 raw_download_jobs: Dict[str, dict] = {}
@@ -44,15 +45,13 @@ async def run_raw_download_job(
         raw_download_jobs[job_id]["status"] = "downloading"
 
         # Check if local video exists in UPLOADS_DIR / TEMP_DIR (e.g. Google Drive or Uploaded video)
-        clean_vname = urllib.parse.unquote(os.path.basename(v_url.split("?")[0])).strip()
+        clean_vname = media_ref_basename(v_url)
         local_src = None
-        if os.path.exists(v_url):
-            local_src = os.path.abspath(v_url)
-        elif (UPLOADS_DIR / clean_vname).exists():
+        if (UPLOADS_DIR / clean_vname).is_file():
             local_src = str(UPLOADS_DIR / clean_vname)
-        elif (TEMP_DIR / clean_vname).exists():
+        elif (TEMP_DIR / clean_vname).is_file():
             local_src = str(TEMP_DIR / clean_vname)
-        else:
+        elif clean_vname:
             for d in [UPLOADS_DIR, TEMP_DIR, EXPORTS_DIR]:
                 if d.exists():
                     for f in d.iterdir():
@@ -62,7 +61,7 @@ async def run_raw_download_job(
                 if local_src:
                     break
 
-        if local_src and os.path.exists(local_src):
+        if local_src and is_safe_media_path(local_src) and os.path.isfile(local_src):
             logger.info(f"Serving local/gdrive video {local_src} directly as full download {out_path}")
             shutil.copy2(local_src, out_path)
             raw_download_jobs[job_id]["status"] = "ready"
@@ -106,11 +105,11 @@ async def run_raw_clip_download_job(
 
         # Optimization: Check if a full raw video already exists locally in UPLOADS_DIR, EXPORTS_DIR or TEMP_DIR
         local_candidates = []
-        clean_vname = urllib.parse.unquote(os.path.basename(v_url.split("?")[0])).strip() if v_url else ""
+        clean_vname = media_ref_basename(v_url) if v_url else ""
         if clean_vname:
-            if (UPLOADS_DIR / clean_vname).exists():
+            if (UPLOADS_DIR / clean_vname).is_file():
                 local_candidates.append(UPLOADS_DIR / clean_vname)
-            if (TEMP_DIR / clean_vname).exists():
+            if (TEMP_DIR / clean_vname).is_file():
                 local_candidates.append(TEMP_DIR / clean_vname)
 
         all_dirs = [UPLOADS_DIR, EXPORTS_DIR, TEMP_DIR]
@@ -127,7 +126,7 @@ async def run_raw_clip_download_job(
 
         source_video = None
         for candidate in local_candidates:
-            if candidate.exists() and candidate.is_file() and candidate.stat().st_size > 1024 * 1024 and is_valid_mp4(candidate):
+            if candidate.is_file() and is_safe_media_path(candidate) and candidate.stat().st_size > 1024 * 1024 and is_valid_mp4(candidate):
                 # Avoid using a small trimmed clip segment as source
                 if "_clip_" not in candidate.name and candidate.name != seg_filename:
                     source_video = str(candidate)

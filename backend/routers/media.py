@@ -17,8 +17,10 @@ from backend.config import (
     detect_speaker_face_box,
     extract_clip_frame,
     get_video_file_metadata,
+    is_safe_media_path,
     is_valid_mp4,
     logger,
+    media_ref_basename,
 )
 
 router = APIRouter(tags=["Media"])
@@ -29,16 +31,6 @@ MAX_AUDIO_UPLOAD_BYTES = 100 * 1024 * 1024        # 100 MB
 MAX_SFX_UPLOAD_BYTES = 50 * 1024 * 1024           # 50 MB
 MAX_IMAGE_UPLOAD_BYTES = 25 * 1024 * 1024         # 25 MB
 MAX_FONT_UPLOAD_BYTES = 50 * 1024 * 1024          # 50 MB
-
-
-def _is_safe_path(target_path: Path) -> bool:
-    """Ensures the resolved file path is strictly located within allowed media directories."""
-    try:
-        resolved = target_path.resolve()
-        allowed_roots = [UPLOADS_DIR.resolve(), TEMP_DIR.resolve(), EXPORTS_DIR.resolve(), FONTS_DIR.resolve()]
-        return any(resolved == root or resolved.is_relative_to(root) for root in allowed_roots)
-    except Exception:
-        return False
 
 
 async def _save_uploaded_file_chunked(file: UploadFile, save_path: Path, max_bytes: int) -> int:
@@ -131,20 +123,19 @@ async def upload_video(
 
 
 def _find_video_file_on_disk(file_name: str) -> Optional[Path]:
-    import urllib.parse
-    clean_name = urllib.parse.unquote(os.path.basename(file_name.split("?")[0])).strip()
+    clean_name = media_ref_basename(file_name)
     
     # Check direct paths
     for base in [UPLOADS_DIR, TEMP_DIR, EXPORTS_DIR]:
         candidate = base / clean_name
-        if candidate.exists() and candidate.is_file() and _is_safe_path(candidate):
+        if candidate.exists() and candidate.is_file() and is_safe_media_path(candidate):
             return candidate
 
     # Search directory listings without regex/glob pitfalls
     all_files: list[Path] = []
     for d in [UPLOADS_DIR, TEMP_DIR, EXPORTS_DIR]:
         if d.exists():
-            all_files.extend([f for f in d.iterdir() if f.is_file() and _is_safe_path(f)])
+            all_files.extend([f for f in d.iterdir() if f.is_file() and is_safe_media_path(f)])
 
     clean_lower = clean_name.lower()
     
@@ -189,7 +180,7 @@ def get_video_file(file_name: str, request: Request):
     for smooth seeking, immediate playback start, and previewing without loading the whole file.
     """
     file_path = _find_video_file_on_disk(file_name)
-    if not file_path or not file_path.exists() or not _is_safe_path(file_path):
+    if not file_path or not file_path.exists() or not is_safe_media_path(file_path):
         raise HTTPException(status_code=404, detail="Video file not found")
 
     file_size = file_path.stat().st_size
@@ -290,7 +281,7 @@ async def upload_bgm(file: UploadFile = File(...)):
 def get_audio_file(file_name: str):
     clean_name = os.path.basename(file_name)
     file_path = UPLOADS_DIR / clean_name
-    if not file_path.exists() or not _is_safe_path(file_path):
+    if not file_path.exists() or not is_safe_media_path(file_path):
         raise HTTPException(status_code=404, detail="Audio file not found")
     media_type = "audio/mpeg" if clean_name.endswith(".mp3") else "audio/wav" if clean_name.endswith(".wav") else "application/octet-stream"
     return FileResponse(file_path, media_type=media_type, filename=clean_name)
@@ -360,7 +351,7 @@ async def upload_watermark(file: UploadFile = File(...)):
 def get_watermark_file(file_name: str):
     clean_name = os.path.basename(file_name)
     file_path = UPLOADS_DIR / clean_name
-    if not file_path.exists() or not _is_safe_path(file_path):
+    if not file_path.exists() or not is_safe_media_path(file_path):
         raise HTTPException(status_code=404, detail="Watermark file not found")
     media_type = "image/png" if clean_name.endswith(".png") else "image/jpeg" if (clean_name.endswith(".jpg") or clean_name.endswith(".jpeg")) else "image/webp"
     return FileResponse(file_path, media_type=media_type, filename=clean_name)
@@ -553,7 +544,7 @@ def get_font_file(file_name: str):
     """
     clean_name = os.path.basename(file_name)
     file_path = FONTS_DIR / clean_name
-    if not file_path.exists() or not _is_safe_path(file_path):
+    if not file_path.exists() or not is_safe_media_path(file_path):
         raise HTTPException(status_code=404, detail="Font file not found")
 
     ext = os.path.splitext(clean_name)[1].lower()

@@ -1,13 +1,21 @@
 import logging
-import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
-
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from backend.config import _base_dir, logger
+from backend.utils.auth import (
+    SESSION_COOKIE,
+    SESSION_MAX_AGE,
+    configured_api_key,
+    key_matches,
+    request_is_authorized,
+    session_token,
+)
 from backend.services.system_service import (
     cleanup_expired_temp_files,
     clear_temp_files,
@@ -20,26 +28,50 @@ from backend.services.system_service import (
 router = APIRouter(tags=["System"])
 
 
-def verify_admin_access(
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-    authorization: Optional[str] = Header(None)
-) -> bool:
+def verify_admin_access(request: Request) -> bool:
     """
-    Verifies administrative authorization.
-    If ADMIN_API_KEY or CHEAT_CLIP_API_KEY is configured in .env, requires matching token.
+    Verifies administrative authorization (same rule as the global access-key middleware).
+    If ADMIN_API_KEY or CHEAT_CLIP_API_KEY is configured in .env, requires the key via
+    X-API-Key / Bearer header or the UI session cookie.
     If no secret key is set, allows open access for local desktop installation.
     """
-    admin_key = (os.environ.get("ADMIN_API_KEY") or os.environ.get("CHEAT_CLIP_API_KEY") or "").strip()
-    if not admin_key:
-        return True
-
-    provided = (x_api_key or "").strip()
-    if not provided and authorization and authorization.startswith("Bearer "):
-        provided = authorization[7:].strip()
-
-    if provided != admin_key:
+    if not request_is_authorized(request.headers, request.cookies):
         raise HTTPException(status_code=401, detail="Unauthorized: Invalid or missing administrator API key")
     return True
+
+
+class AccessKeyRequest(BaseModel):
+    key: str
+
+
+@router.get("/api/auth/status")
+def auth_status(request: Request):
+    """Lets the UI know whether it must ask for the access key."""
+    return {
+        "required": bool(configured_api_key()),
+        "authenticated": request_is_authorized(request.headers, request.cookies),
+    }
+
+
+@router.post("/api/auth/session")
+def create_auth_session(body: AccessKeyRequest, request: Request):
+    """Exchanges the access key for an HttpOnly session cookie used by the web UI."""
+    key = configured_api_key()
+    if not key:
+        return {"required": False, "authenticated": True}
+    if not key_matches(body.key.strip(), key):
+        raise HTTPException(status_code=401, detail="Invalid access key")
+    response = JSONResponse({"required": True, "authenticated": True})
+    response.set_cookie(
+        SESSION_COOKIE,
+        session_token(key),
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        samesite="strict",
+        secure=request.url.scheme == "https",
+        path="/",
+    )
+    return response
 
 
 @router.get("/api/temp-storage-info")
@@ -113,8 +145,10 @@ def api_check_update():
     }
 
 
+# Plain `def`: FastAPI runs it in a worker thread, so the minutes-long git/npm/pip
+# subprocesses below do not freeze the event loop.
 @router.post("/api/system/update")
-async def api_perform_update(authorized: bool = Depends(verify_admin_access)):
+def api_perform_update(authorized: bool = Depends(verify_admin_access)):
     """Pulls latest code, syncs dependencies if modified, and triggers background restart."""
     root_dir = Path(_base_dir).parent
     info = get_current_git_info()
@@ -159,7 +193,6 @@ async def api_perform_update(authorized: bool = Depends(verify_admin_access)):
     if "package.json" in changed_files:
         logger.info("package.json changed. Running npm install...")
         try:
-            import shutil
             npm_bin = shutil.which("npm.cmd") or shutil.which("npm") or "npm"
             subprocess.run([npm_bin, "install"], shell=False, cwd=str(root_dir), timeout=120)
             updated_deps.append("Node modules (npm install)")
@@ -179,6 +212,7 @@ async def api_perform_update(authorized: bool = Depends(verify_admin_access)):
             logger.warning(f"pip install warning: {e}")
 
     # 5. Trigger detached restart runner
+    _ensure_restart_supported()
     trigger_detached_restart(delay=2.5)
 
     new_info = get_current_git_info()
@@ -192,9 +226,17 @@ async def api_perform_update(authorized: bool = Depends(verify_admin_access)):
     }
 
 
+def _ensure_restart_supported():
+    # The restart runner relaunches `npm run dev`; without npm (e.g. the Docker image)
+    # it would kill the server and start nothing.
+    if not (shutil.which("npm") or shutil.which("npm.cmd")):
+        raise HTTPException(status_code=501, detail="In-app restart needs npm (`npm run dev` setup). Restart the server or container manually.")
+
+
 @router.post("/api/system/restart")
 async def api_restart_app(authorized: bool = Depends(verify_admin_access)):
     """Triggers an immediate background restart without pulling code."""
+    _ensure_restart_supported()
     trigger_detached_restart(delay=2.5)
     return {
         "success": True,
